@@ -1,0 +1,89 @@
+#!/usr/bin/zsh
+
+# Check arguments
+if [ "$#" -lt 3 ]; then
+    echo "Usage: sawplus <env(dev|beta)> <duration_in_minutes> <group_keywords...> "
+    exit 1
+fi
+
+ENV=$1
+START_TIME=$2
+GROUP_KEYWORDS=("${@:3}")
+
+if ! command -v saw &> /dev/null; then
+    go install "github.com/TylerBrock/saw@latest"
+fi
+
+# 1. Map environment to AWS Region
+case $ENV in
+    dev)
+        REGION="ap-southeast-1"
+        ;;
+    beta)
+        REGION="us-west-2"
+        ;;
+    *)
+        echo "Error: Environment must be 'dev' or 'beta'"
+        exit 1
+esac
+
+# Fetch initial list filtered by environment
+MATCHED_GROUPS=$(saw groups --region "$REGION" | rg "$ENV")
+
+function findGroupName() {
+    # Narrow down the search using all provided keywords
+    for word in "${GROUP_KEYWORDS[@]}"; do
+        MATCHED_GROUPS=$(echo "$MATCHED_GROUPS" | rg -i "$word")
+    done
+}
+findGroupName
+
+# Convert matched lines to a zsh array
+MATCHED_ARRAY=(${(f)MATCHED_GROUPS})
+GROUP_COUNT=${#MATCHED_ARRAY[@]}
+
+FINAL_GROUP=""
+
+if [ "$GROUP_COUNT" -eq 0 ]; then
+    echo "Error: No log group found matching '$GROUP_KEYWORDS'."
+    exit 1
+elif [ "$GROUP_COUNT" -gt 1 ]; then
+    # Logic: If only one keyword was provided, try to find an exact match
+    if [ "${#GROUP_KEYWORDS[@]}" -eq 1 ]; then
+        KEYWORD=$GROUP_KEYWORDS[1]
+        for item in "${MATCHED_ARRAY[@]}"; do
+            # Trim whitespace and compare
+            CLEAN_ITEM=$(echo "$item" | xargs)
+            if [ "$CLEAN_ITEM" = "$KEYWORD" ]; then
+                FINAL_GROUP=$CLEAN_ITEM
+                break
+            fi
+        done
+    fi
+
+    # If no exact match was found among multiple results
+    if [ -z "$FINAL_GROUP" ]; then
+        echo "Error: Multiple matches found. Please be more specific:"
+        echo "$MATCHED_GROUPS"
+        exit 1
+    fi
+else
+    # Exactly one match found
+    FINAL_GROUP=$(echo "$MATCHED_GROUPS" | xargs)
+fi
+
+echo "Target Log Group: $FINAL_GROUP"
+
+# 2. Fetch logs to a temporary file
+TEMP_FILE="/tmp/aws_logs_$(date +%s).log"
+
+saw get --region "$REGION" --start "-${START_TIME}m" --pretty --expand "$FINAL_GROUP" > "$TEMP_FILE" 
+
+# 3. Open with Editor
+if [ -s "$TEMP_FILE" ]; then
+    nvim "$TEMP_FILE"
+    rm "$TEMP_FILE"
+else
+    echo "No logs found in the specified time range."
+    rm "$TEMP_FILE"
+fi

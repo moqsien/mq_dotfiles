@@ -1,0 +1,8 @@
+#!/usr/bin/zsh
+
+GEOM=$(slurp)
+[ -z "$GEOM" ] && exit 0
+
+# 核心魔法：--copy-command wl-copy
+grim -g "$GEOM" - | satty --filename - --copy-command wl-copy --early-exit
+
