@@ -228,4 +228,13 @@ config.keys = {
 	{ key = "c", mods = "CTRL|SHIFT", action = act.ActivateCopyMode },
 }
 
+-- 设置鼠标绑定：选中即复制到系统剪贴板（并在点击链接时打开它）
+config.mouse_bindings = {
+	{
+		event = { Up = { streak = 1, button = "Left" } },
+		mods = "NONE",
+		action = wezterm.action.CompleteSelectionOrOpenLinkAtMouseCursor("ClipboardAndPrimarySelection"),
+	},
+}
+
 return config
