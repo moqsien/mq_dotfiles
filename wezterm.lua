@@ -237,4 +237,6 @@ config.mouse_bindings = {
 	},
 }
 
+config.color_scheme = "Everforest Dark Medium (Gogh)"
+
 return config
