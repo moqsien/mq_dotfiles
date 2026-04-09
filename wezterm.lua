@@ -237,6 +237,42 @@ config.mouse_bindings = {
 	},
 }
 
-config.color_scheme = "Everforest Dark Medium (Gogh)"
+-- config.color_scheme = "Everforest Dark Medium (Gogh)"
+config.colors = {
+	-- 【极致黑背景】从 #272e33 进一步加深到 #1a1c1d，彻底消除灰色雾感
+	background = "#1a1c1d",
+	-- 【高亮前景色】文字稍微调亮到 #d3c6aa，在黑背景下极其锐利
+	foreground = "#d3c6aa",
+
+	cursor_bg = "#a7c080",
+	cursor_fg = "#1a1c1d",
+	cursor_border = "#a7c080",
+
+	-- 【选中区域】加大对比，让选中的文字一眼就能看清
+	selection_bg = "#425047",
+	selection_fg = "#d3c6aa",
+
+	-- 【鲜艳 ANSI 色彩】使用最鲜艳的色彩库，确保图标和文字颜色不再“灰暗”
+	ansi = {
+		"#4a555b", -- 0: 黑
+		"#e67e80", -- 1: 红
+		"#a7c080", -- 2: 绿 (更有活力的森林绿)
+		"#dbbc7f", -- 3: 黄
+		"#7fbbb3", -- 4: 蓝
+		"#d699b6", -- 5: 品红
+		"#83c092", -- 6: 青
+		"#d3c6aa", -- 7: 白
+	},
+	brights = {
+		"#56635f", -- 8: 亮黑
+		"#e67e80",
+		"#a7c080",
+		"#dbbc7f",
+		"#7fbbb3",
+		"#d699b6",
+		"#83c092",
+		"#d3c6aa",
+	},
+}
 
 return config
