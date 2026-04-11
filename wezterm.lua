@@ -121,31 +121,62 @@ end
 -- ====================================================
 -- 1. 启动事件：自动全屏与 tmux 风格的初始分屏
 -- ====================================================
+-- wezterm.on("gui-startup", function(cmd)
+-- 	local tab, main_pane, window = mux.spawn_window(cmd or {})
+--
+-- 	-- 注意：wezterm.time.call_after(秒数, 闭包函数)
+-- 	-- 注意这里的时间单位是“秒”
+-- 	wezterm.time.call_after(0.15, function()
+-- 		-- 1. 执行最大化
+-- 		wezterm.run_child_process({ "niri", "msg", "action", "maximize-column" })
+--
+-- 		-- 2. 嵌套第二个延迟，给 Niri 留出拉伸动画时间
+-- 		wezterm.time.call_after(0.1, function()
+-- 			local right_pane = main_pane:split({
+-- 				direction = "Right",
+-- 				size = 0.15,
+-- 			})
+--
+-- 			if right_pane then
+-- 				right_pane:split({
+-- 					direction = "Bottom",
+-- 					size = 0.5,
+-- 				})
+-- 			end
+-- 			main_pane:activate()
+-- 		end)
+-- 	end)
+-- end)
+
+config.initial_cols = 200
+config.initial_rows = 60
+
 wezterm.on("gui-startup", function(cmd)
 	local tab, main_pane, window = mux.spawn_window(cmd or {})
 
-	-- 注意：wezterm.time.call_after(秒数, 闭包函数)
-	-- 注意这里的时间单位是“秒”
-	wezterm.time.call_after(0.15, function()
-		-- 1. 执行最大化
-		wezterm.run_child_process({ "niri", "msg", "action", "maximize-column" })
+	-- 1. 右边占 10%：总宽 200 列的 10% 就是 20 列
+	local right_pane = main_pane:split({
+		direction = "Right",
+		size = 20,
+	})
 
-		-- 2. 嵌套第二个延迟，给 Niri 留出拉伸动画时间
-		wezterm.time.call_after(0.1, function()
-			local right_pane = main_pane:split({
-				direction = "Right",
-				size = 0.15,
-			})
+	if right_pane then
+		-- 2. 右边上下各 50%：总高 60 行的 50% 就是 30 行
+		right_pane:split({
+			direction = "Bottom",
+			size = 30,
+		})
+	end
 
-			if right_pane then
-				right_pane:split({
-					direction = "Bottom",
-					size = 0.5,
-				})
-			end
-			main_pane:activate()
-		end)
-	end)
+	main_pane:activate()
+
+	-- 3. 0.5 秒后 Niri 执行最大化时，窗口被瞬间拉满屏幕
+	-- 此时 WezTerm 会将这 20列 和 30行 完美等比拉伸，永远保持 10% 和 50% 的比例！
+	wezterm.background_child_process({
+		"sh",
+		"-c",
+		"sleep 0.5 && niri msg action maximize-column",
+	})
 end)
 
 -- ====================================================
