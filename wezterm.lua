@@ -121,33 +121,6 @@ end
 -- ====================================================
 -- 1. 启动事件：自动全屏与 tmux 风格的初始分屏
 -- ====================================================
--- wezterm.on("gui-startup", function(cmd)
--- 	local tab, main_pane, window = mux.spawn_window(cmd or {})
---
--- 	-- 注意：wezterm.time.call_after(秒数, 闭包函数)
--- 	-- 注意这里的时间单位是“秒”
--- 	wezterm.time.call_after(0.15, function()
--- 		-- 1. 执行最大化
--- 		wezterm.run_child_process({ "niri", "msg", "action", "maximize-column" })
---
--- 		-- 2. 嵌套第二个延迟，给 Niri 留出拉伸动画时间
--- 		wezterm.time.call_after(0.1, function()
--- 			local right_pane = main_pane:split({
--- 				direction = "Right",
--- 				size = 0.15,
--- 			})
---
--- 			if right_pane then
--- 				right_pane:split({
--- 					direction = "Bottom",
--- 					size = 0.5,
--- 				})
--- 			end
--- 			main_pane:activate()
--- 		end)
--- 	end)
--- end)
-
 config.initial_cols = 200
 config.initial_rows = 60
 
@@ -184,6 +157,8 @@ end)
 -- ====================================================
 -- 默认使用 zsh
 config.default_prog = { "zsh", "-l" }
+
+config.font = wezterm.font("JetBrains Mono Nerd Font")
 
 -- 保持纯血 Wayland 运行
 config.enable_wayland = true
@@ -260,11 +235,27 @@ config.keys = {
 }
 
 -- 设置鼠标绑定：选中即复制到系统剪贴板（并在点击链接时打开它）
+config.enable_wayland = true
+
 config.mouse_bindings = {
+	-- 1. 单次点击拖拽松开
 	{
 		event = { Up = { streak = 1, button = "Left" } },
 		mods = "NONE",
-		action = wezterm.action.CompleteSelectionOrOpenLinkAtMouseCursor("ClipboardAndPrimarySelection"),
+		-- 删除了 PrimarySelection，只保留纯系统剪贴板
+		action = act.CompleteSelectionOrOpenLinkAtMouseCursor("Clipboard"),
+	},
+	-- 2. 双击选中单词并松开
+	{
+		event = { Up = { streak = 2, button = "Left" } },
+		mods = "NONE",
+		action = act.CompleteSelection("Clipboard"),
+	},
+	-- 3. 三击选中整行并松开
+	{
+		event = { Up = { streak = 3, button = "Left" } },
+		mods = "NONE",
+		action = act.CompleteSelection("Clipboard"),
 	},
 }
 
