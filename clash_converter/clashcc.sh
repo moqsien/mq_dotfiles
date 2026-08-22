@@ -8,7 +8,6 @@ start() {
     fi
     command -v clash_conv >/dev/null || { echo "未找到 clash_conv 命令，请先安装" >&2; return 1; }
     ( trap '' HUP; exec clash_conv >/dev/null 2>&1 ) &
-    echo "clash_conv 已启动"
 }
 
 stop() {
