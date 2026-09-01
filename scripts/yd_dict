@@ -1,296 +1,540 @@
 #!/usr/bin/env python3
+
 import gzip
+import html
 import json
 import os
+import random
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
-
-# ========================================================
-# 强制补全图形显示环境变量
-# ========================================================
-if not os.environ.get("DISPLAY"):
-    os.environ["DISPLAY"] = ":0"
-if not os.environ.get("WAYLAND_DISPLAY"):
-    os.environ["WAYLAND_DISPLAY"] = "wayland-0"
-if not os.environ.get("XDG_RUNTIME_DIR"):
-    os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
-# ========================================================
-
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Connection": "keep-alive",
-    "Host": "dict.youdao.com",
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
-    "sec-ch-ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Linux"',
-}
+from html.parser import HTMLParser
+from typing import Any, Dict, List, Optional, Tuple
 
 
-def clean(text):
-    """剥掉 <b> </b> 等 HTML 标签"""
-    if not isinstance(text, str):
-        return str(text)
-    return re.sub(r"</?[^>]+>", "", text).strip()
+class CambridgeDictParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.result = {
+            "word": "N/A",
+            "pos": "N/A",
+            "uk_pron": "N/A",
+            "us_pron": "N/A",
+            "meanings": [],
+        }
+        self.capture_state = None
+        self.current_data: List[str] = []
+        self.tag_stack: List[Tuple[str, str]] = []
+        self.in_uk_pron_block = False
+        self.in_us_pron_block = False
+        self.current_def: Optional[Dict[str, str]] = None
 
+    def handle_starttag(self, tag: str, attrs: List[tuple]):
+        attrs_dict = dict(attrs)
+        cls = attrs_dict.get("class", "")
+        self.tag_stack.append((tag, cls))
 
-def get_youdao_dict(word):
-    url = f"http://dict.youdao.com/jsonapi?q={urllib.parse.quote(word)}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as response:
-            raw_data = response.read()
-            encoding = response.info().get("Content-Encoding")
-            if encoding == "gzip":
-                raw_data = gzip.decompress(raw_data)
-            elif encoding == "deflate":
-                raw_data = zlib.decompress(raw_data)
-            return json.loads(raw_data.decode("utf-8"))
-    except Exception as e:
-        return {"error": str(e)}
+        if "headword" in cls or ("tb" in cls and "ttn" in cls):
+            self.capture_state = "word"
+            self.current_data = []
+        elif "pos dpos" in cls:
+            self.capture_state = "pos"
+            self.current_data = []
+        elif "uk dpron-i" in cls:
+            self.in_uk_pron_block = True
+        elif "us dpron-i" in cls:
+            self.in_us_pron_block = True
+        elif "pron dpron" in cls and self.in_uk_pron_block:
+            self.capture_state = "uk_pron"
+            self.current_data = []
+        elif "pron dpron" in cls and self.in_us_pron_block:
+            self.capture_state = "us_pron"
+            self.current_data = []
+        elif "def ddef_d db" in cls:
+            self._save_current_definition()
+            self.current_def = {"definition": "", "example": "N/A"}
+            self.capture_state = "definition"
+            self.current_data = []
+        elif "examp dexamp" in cls or "eg deg" in cls:
+            self.capture_state = "example"
+            self.current_data = []
 
-
-# ---------------- 递归提取工具 ----------------
-
-
-def _texts_from_l(node):
-    """从 l 字段递归提取所有字符串 (兼容 字符串/列表/{"i":[...]} 等任意嵌套)"""
-    if isinstance(node, str):
-        return [node]
-    if isinstance(node, list):
-        out = []
-        for item in node:
-            out += _texts_from_l(item)
-        return out
-    if isinstance(node, dict):
-        out = []
-        for v in node.values():
-            out += _texts_from_l(v)
-        return out
-    return []
-
-
-def _walk_trs(node, defs):
-    """递归遍历 ec.trs 的所有嵌套格式"""
-    if isinstance(node, list):
-        for item in node:
-            _walk_trs(item, defs)
-    elif isinstance(node, dict):
-        if "l" in node:
-            for t in _texts_from_l(node["l"]):
-                defs.append(clean(t))
-        for tr in node.get("tr", []):
-            if isinstance(tr, dict):
-                pos = tr.get("pos", "")
-                texts = []
-                if isinstance(tr.get("tr"), list):
-                    texts += [clean(x) for x in tr["tr"] if isinstance(x, str)]
-                if "l" in tr:
-                    texts += [clean(x) for x in _texts_from_l(tr["l"])]
-                if texts:
-                    defs.append((pos + " " if pos else "") + "; ".join(texts))
-
-
-# ---------------- 数据提取 ----------------
-
-
-def extract_phones(data):
-    basic = data.get("basic") or {}
-    uk = basic.get("uk-phonetic", "")
-    us = basic.get("us-phonetic", "")
-    ph = basic.get("phonetic", "")
-    if uk or us or ph:
-        return uk, us, ph
-    for src in ("ec", "simple"):
-        words = (data.get(src) or {}).get("word", [])
-        if isinstance(words, list) and words and isinstance(words[0], dict):
-            uk = words[0].get("ukphone", "")
-            us = words[0].get("usphone", "")
-            if uk or us:
-                return uk, us, ""
-    return "", "", ""
-
-
-def extract_prototype(data):
-    words = (data.get("ec") or {}).get("word", [])
-    if isinstance(words, list):
-        for w in words:
-            if isinstance(w, dict) and w.get("prototype"):
-                return w["prototype"]
-    return ""
-
-
-def extract_definitions(data):
-    defs = []
-    # basic
-    for exp in (data.get("basic") or {}).get("explains", []):
-        defs.append(clean(exp))
-    # expand_ec
-    for word_info in (data.get("expand_ec") or {}).get("word", []):
-        pos = word_info.get("pos", "")
-        ts = []
-        for t in word_info.get("transList", []):
-            c = t.get("content") or {}
-            txt = c.get("trans") or t.get("trans") or ""
-            if txt:
-                ts.append(clean(txt))
-        if ts:
-            defs.append(f"[{pos}] {'; '.join(ts)}" if pos else "; ".join(ts))
-    # ec.trs (递归通吃所有格式)
-    for w in (data.get("ec") or {}).get("word", []):
-        if isinstance(w, dict):
-            for group in w.get("trs", []):
-                _walk_trs(group, defs)
-    # collins 双语释义
-    for ce in (data.get("collins") or {}).get("collins_entries", []):
-        for entry in (ce.get("entries") or {}).get("entry", []):
-            for te in entry.get("tran_entry", []):
-                tran = clean(te.get("tran", ""))
-                pos = (te.get("pos_entry") or {}).get("pos", "")
-                if tran:
-                    defs.append(f"[{pos}] {tran}" if pos else tran)
-    # 去重保序
-    seen = set()
-    uniq = []
-    for d in defs:
-        if d and d not in seen:
-            seen.add(d)
-            uniq.append(d)
-    return uniq
-
-
-def extract_examples(data, limit=3):
-    exs = []
-    for word_info in (data.get("expand_ec") or {}).get("word", []):
-        for t in word_info.get("transList", []):
-            for s in (t.get("content") or {}).get("sents", []):
-                orig = clean(s.get("sentOrig", ""))
-                trans = clean(s.get("sentTrans", ""))
-                if orig:
-                    exs.append((orig, trans))
-    if not exs:
-        for p in (data.get("blng_sents_part") or {}).get("sentence-pair", []):
-            orig = clean(p.get("sentence-eng", "") or p.get("sentence", ""))
-            trans = clean(p.get("sentence-translation", ""))
-            if orig:
-                exs.append((orig, trans))
-    if not exs:
-        for s in (data.get("auth_sents_part") or {}).get("sent", []):
-            orig = clean((s.get("foreign") or "").strip())
-            if orig:
-                exs.append((orig, ""))
-    return exs[:limit]
-
-
-# ---------------- 格式化与弹窗 ----------------
-
-
-def format_dict_data(data, proto_data=None, prototype=""):
-    if "error" in data:
-        return f"❌ 请求失败: {data['error']}"
-
-    lines = []
-    uk, us, ph = extract_phones(data)
-    if uk or us:
-        lines.append(f"🇬🇧 [{uk}]   🇺🇸 [{us}]")
-    elif ph:
-        lines.append(f"🔊 [{ph}]")
-    if prototype:
-        lines.append(f"↪ 原形: {prototype}")
-    if lines:
-        lines.append("-" * 45)
-
-    defs = extract_definitions(data)
-    if proto_data:
-        for d in extract_definitions(proto_data):
-            if d not in defs:
-                defs.append(d)
-    for d in defs[:8]:
-        lines.append(f"• {d}")
-
-    exs = extract_examples(data)
-    if not exs and proto_data:
-        exs = extract_examples(proto_data)
-    if exs:
-        lines.append("")
-        lines.append("✏️ 例句:")
-        for orig, trans in exs:
-            lines.append(f"  • {orig}")
-            if trans:
-                lines.append(f"    {trans}")
-
-    web_items = (data.get("web_trans") or {}).get("web-translation", [])
-    if web_items:
-        lines.append("")
-        lines.append("🌐 专业/网络释义:")
-        for item in web_items[:3]:
-            key = clean(item.get("key", ""))
-            vals = [
-                clean(t.get("value", ""))
-                for t in item.get("trans", [])
-                if isinstance(t, dict) and t.get("value")
-            ]
-            if key and vals:
-                lines.append(f"  - {key}: {', '.join(vals)}")
-
-    if not lines and data.get("translation"):
-        lines.append("💡 基础翻译:")
-        lines.append("  " + ", ".join(data["translation"]))
-
-    if not lines:
-        with open("/tmp/sioyek_dict_debug.log", "a") as f:
-            f.write(f"[未解析] keys={list(data.keys())}\n")
-        return "未找到该词的详细释义。"
-
-    return "\n".join(lines)
-
-
-def show_popup(word, message):
-    safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    cmd = [
-        "zenity",
-        "--info",
-        f"--title=📖 {word}",
-        f"--text={safe}",
-        "--width=520",
-        "--ok-label=关闭",
-    ]
-    try:
-        if (
-            subprocess.run(
-                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            ).returncode
-            == 0
-        ):
+    def handle_endtag(self, tag: str):
+        if not self.tag_stack:
             return
-    except FileNotFoundError:
-        pass
 
-    try:
-        flat_message = message.replace("\n", " | ")
-        subprocess.run(
-            ["notify-send", f"📖 {word}", flat_message, "-t", "8000"], check=True
+        popped_tag, popped_cls = self.tag_stack.pop()
+
+        if self.capture_state == "word" and (
+            "headword" in popped_cls or ("tb" in popped_cls and "ttn" in popped_cls)
+        ):
+            self.result["word"] = self._clean_text("".join(self.current_data)).lower()
+            self.capture_state = None
+        elif self.capture_state == "pos" and "pos dpos" in popped_cls:
+            self.result["pos"] = self._clean_text("".join(self.current_data))
+            self.capture_state = None
+        elif "uk dpron-i" in popped_cls:
+            self.in_uk_pron_block = False
+        elif "us dpron-i" in popped_cls:
+            self.in_us_pron_block = False
+        elif self.capture_state == "uk_pron" and "pron dpron" in popped_cls:
+            raw = "".join(self.current_data)
+            match = re.search(r"/[^/]+/", raw)
+            self.result["uk_pron"] = match.group(0) if match else self._clean_text(raw)
+            self.capture_state = None
+        elif self.capture_state == "us_pron" and "pron dpron" in popped_cls:
+            raw = "".join(self.current_data)
+            match = re.search(r"/[^/]+/", raw)
+            self.result["us_pron"] = match.group(0) if match else self._clean_text(raw)
+            self.capture_state = None
+        elif self.capture_state == "definition" and "def ddef_d db" in popped_cls:
+            if self.current_def is not None:
+                self.current_def["definition"] = self._clean_text(
+                    "".join(self.current_data)
+                )
+            self.capture_state = None
+        elif self.capture_state == "example" and (
+            "examp dexamp" in popped_cls or "eg deg" in popped_cls
+        ):
+            if self.current_def is not None:
+                self.current_def["example"] = self._clean_text(
+                    "".join(self.current_data)
+                )
+            self.capture_state = None
+        elif "def-block ddef_block" in popped_cls:
+            self._save_current_definition()
+            self.current_def = None
+
+    def handle_data(self, data: str):
+        if self.capture_state:
+            self.current_data.append(data)
+
+    def _save_current_definition(self):
+        if self.current_def and self.current_def.get("definition"):
+            self.result["meanings"].append(self.current_def)
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        return html.unescape(re.sub(r"\s+", " ", text).strip())
+
+
+class CambridgeDictionaryScraper:
+    def __init__(
+        self,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: int = 10,
+        delay: bool = True,
+    ):
+        self.headers = headers or {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        self.timeout = timeout
+        self.delay = delay
+
+    def fetch_word(self, word: str, max_retries: int = 3) -> Dict[str, Any]:
+        safe_word = word.strip().replace(" ", "-")
+        url = f"https://dictionary.cambridge.org/dictionary/english/{urllib.parse.quote(safe_word)}"
+
+        for attempt in range(max_retries):
+            try:
+                if self.delay:
+                    time.sleep(random.uniform(1.0, 2.0))
+                req = urllib.request.Request(url, headers=self.headers, method="GET")
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    html_content = response.read().decode("utf-8", errors="ignore")
+
+                parser = CambridgeDictParser()
+                parser.feed(html_content)
+                parser.close()
+                parser.result["meanings"] = parser.result["meanings"][:3]
+                return parser.result
+            except urllib.error.HTTPError as error:
+                if error.code == 404:
+                    return {"error": f"未找到单词: '{word}'"}
+                if error.code == 403:
+                    return {"error": "被 Cloudflare 拦截 (403)"}
+                if error.code == 429:
+                    if self.delay:
+                        time.sleep(5 * (attempt + 1))
+                    continue
+            except Exception as error:
+                if attempt == max_retries - 1:
+                    return {"error": str(error)}
+                if self.delay:
+                    time.sleep(2**attempt)
+
+        return {"error": f"达到最大重试次数: '{word}'"}
+
+
+class YoudaoDictionary:
+    HEADERS = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+        "Host": "dict.youdao.com",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Linux"',
+    }
+
+    def __init__(self, headers: Optional[Dict[str, str]] = None, timeout: int = 5):
+        self.headers = headers or self.HEADERS.copy()
+        self.timeout = timeout
+
+    def fetch_word(self, word: str) -> Dict[str, Any]:
+        url = f"http://dict.youdao.com/jsonapi?q={urllib.parse.quote(word)}"
+        req = urllib.request.Request(url, headers=self.headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                raw_data = response.read()
+                encoding = response.info().get("Content-Encoding")
+                if encoding == "gzip":
+                    raw_data = gzip.decompress(raw_data)
+                elif encoding == "deflate":
+                    raw_data = zlib.decompress(raw_data)
+                return self._decode_json(raw_data)
+        except Exception as error:
+            return {"error": str(error)}
+
+    @staticmethod
+    def _decode_json(raw_data: bytes) -> Dict[str, Any]:
+        return json.loads(raw_data.decode("utf-8"))
+
+    @staticmethod
+    def clean(text: Any) -> str:
+        if not isinstance(text, str):
+            return str(text)
+        return re.sub(r"</?[^>]+>", "", text).strip()
+
+    @classmethod
+    def _texts_from_l(cls, node: Any) -> List[str]:
+        if isinstance(node, str):
+            return [node]
+        if isinstance(node, list):
+            output: List[str] = []
+            for item in node:
+                output.extend(cls._texts_from_l(item))
+            return output
+        if isinstance(node, dict):
+            output = []
+            for value in node.values():
+                output.extend(cls._texts_from_l(value))
+            return output
+        return []
+
+    @classmethod
+    def _walk_trs(cls, node: Any, definitions: List[str]):
+        if isinstance(node, list):
+            for item in node:
+                cls._walk_trs(item, definitions)
+        elif isinstance(node, dict):
+            if "l" in node:
+                definitions.extend(
+                    cls.clean(text) for text in cls._texts_from_l(node["l"])
+                )
+            for translation in node.get("tr", []):
+                if not isinstance(translation, dict):
+                    continue
+                pos = translation.get("pos", "")
+                texts = [
+                    cls.clean(text)
+                    for text in translation.get("tr", [])
+                    if isinstance(text, str)
+                ]
+                if "l" in translation:
+                    texts.extend(
+                        cls.clean(text) for text in cls._texts_from_l(translation["l"])
+                    )
+                if texts:
+                    definitions.append((pos + " " if pos else "") + "; ".join(texts))
+
+    @staticmethod
+    def extract_phones(data: Dict[str, Any]) -> Tuple[str, str, str]:
+        basic = data.get("basic") or {}
+        uk = basic.get("uk-phonetic", "")
+        us = basic.get("us-phonetic", "")
+        phonetic = basic.get("phonetic", "")
+        if uk or us or phonetic:
+            return uk, us, phonetic
+
+        for source in ("ec", "simple"):
+            words = (data.get(source) or {}).get("word", [])
+            if isinstance(words, list) and words and isinstance(words[0], dict):
+                uk = words[0].get("ukphone", "")
+                us = words[0].get("usphone", "")
+                if uk or us:
+                    return uk, us, ""
+        return "", "", ""
+
+    @staticmethod
+    def extract_prototype(data: Dict[str, Any]) -> str:
+        words = (data.get("ec") or {}).get("word", [])
+        if isinstance(words, list):
+            for word in words:
+                if isinstance(word, dict) and word.get("prototype"):
+                    return word["prototype"]
+        return ""
+
+    @classmethod
+    def extract_definitions(cls, data: Dict[str, Any]) -> List[str]:
+        definitions: List[str] = []
+        basic = data.get("basic") or {}
+        definitions.extend(cls.clean(exp) for exp in basic.get("explains", []))
+
+        for word_info in (data.get("expand_ec") or {}).get("word", []):
+            pos = word_info.get("pos", "")
+            translations = []
+            for translation in word_info.get("transList", []):
+                content = translation.get("content") or {}
+                text = content.get("trans") or translation.get("trans") or ""
+                if text:
+                    translations.append(cls.clean(text))
+            if translations:
+                definitions.append(
+                    f"[{pos}] {'; '.join(translations)}"
+                    if pos
+                    else "; ".join(translations)
+                )
+
+        for word in (data.get("ec") or {}).get("word", []):
+            if isinstance(word, dict):
+                for group in word.get("trs", []):
+                    cls._walk_trs(group, definitions)
+
+        for collins in (data.get("collins") or {}).get("collins_entries", []):
+            for entry in (collins.get("entries") or {}).get("entry", []):
+                for translation_entry in entry.get("tran_entry", []):
+                    translation = cls.clean(translation_entry.get("tran", ""))
+                    pos = (translation_entry.get("pos_entry") or {}).get("pos", "")
+                    if translation:
+                        definitions.append(
+                            f"[{pos}] {translation}" if pos else translation
+                        )
+
+        unique: List[str] = []
+        seen = set()
+        for definition in definitions:
+            if definition and definition not in seen:
+                seen.add(definition)
+                unique.append(definition)
+        return unique
+
+    @classmethod
+    def extract_examples(
+        cls, data: Dict[str, Any], limit: int = 3
+    ) -> List[Tuple[str, str]]:
+        examples: List[Tuple[str, str]] = []
+        for word_info in (data.get("expand_ec") or {}).get("word", []):
+            for translation in word_info.get("transList", []):
+                for sentence in (translation.get("content") or {}).get("sents", []):
+                    original = cls.clean(sentence.get("sentOrig", ""))
+                    translated = cls.clean(sentence.get("sentTrans", ""))
+                    if original:
+                        examples.append((original, translated))
+
+        if not examples:
+            for pair in (data.get("blng_sents_part") or {}).get("sentence-pair", []):
+                original = cls.clean(
+                    pair.get("sentence-eng", "") or pair.get("sentence", "")
+                )
+                translated = cls.clean(pair.get("sentence-translation", ""))
+                if original:
+                    examples.append((original, translated))
+
+        if not examples:
+            for sentence in (data.get("auth_sents_part") or {}).get("sent", []):
+                original = cls.clean((sentence.get("foreign") or "").strip())
+                if original:
+                    examples.append((original, ""))
+        return examples[:limit]
+
+    @classmethod
+    def extract_web_translations(cls, data: Dict[str, Any]) -> List[str]:
+        output = []
+        web_items = (data.get("web_trans") or {}).get("web-translation", [])
+        for item in web_items[:3]:
+            key = cls.clean(item.get("key", ""))
+            values = [
+                cls.clean(translation.get("value", ""))
+                for translation in item.get("trans", [])
+                if isinstance(translation, dict) and translation.get("value")
+            ]
+            if key and values:
+                output.append(f"  - {key}: {', '.join(values)}")
+        return output
+
+
+class DictionaryFormatter:
+    def __init__(self, youdao: YoudaoDictionary):
+        self.youdao = youdao
+
+    def format(
+        self,
+        youdao_data: Dict[str, Any],
+        prototype_data: Optional[Dict[str, Any]],
+        cambridge_data: Dict[str, Any],
+        prototype: str = "",
+    ) -> str:
+        lines: List[str] = []
+        if "error" in youdao_data:
+            lines.append(f"❌ 请求失败: {youdao_data['error']}")
+        youdao_uk, youdao_us, youdao_phonetic = self.youdao.extract_phones(youdao_data)
+        cambridge_uk = cambridge_data.get("uk_pron", "")
+        cambridge_us = cambridge_data.get("us_pron", "")
+        if cambridge_uk == "N/A":
+            cambridge_uk = ""
+        if cambridge_us == "N/A":
+            cambridge_us = ""
+        uk = youdao_uk or cambridge_uk
+        us = youdao_us or cambridge_us
+        if uk or us:
+            lines.append(f"🇬🇧 [{uk}]   🇺🇸 [{us}]")
+        elif youdao_phonetic:
+            lines.append(f"🔊 [{youdao_phonetic}]")
+
+        if prototype:
+            lines.append(f"↪ 原形: {prototype}")
+        if uk or us or youdao_phonetic or prototype:
+            lines.append("-" * 45)
+
+        definitions = self.youdao.extract_definitions(youdao_data)
+        if prototype_data:
+            for definition in self.youdao.extract_definitions(prototype_data):
+                if definition not in definitions:
+                    definitions.append(definition)
+        for definition in definitions[:8]:
+            lines.append(f"• {definition}")
+
+        cambridge_meanings = [
+            meaning
+            for meaning in cambridge_data.get("meanings", [])
+            if meaning.get("definition")
+        ]
+        if cambridge_meanings:
+            if definitions:
+                lines.append("")
+            lines.append("📘 Cambridge English definitions:")
+            for meaning in cambridge_meanings:
+                pos = cambridge_data.get("pos", "")
+                prefix = f"[{pos}] " if pos and pos != "N/A" else ""
+                lines.append(f"  • {prefix}{meaning['definition']}")
+
+        examples = self.youdao.extract_examples(youdao_data)
+        if not examples and prototype_data:
+            examples = self.youdao.extract_examples(prototype_data)
+        if not examples:
+            examples = [
+                (meaning.get("example", ""), "")
+                for meaning in cambridge_meanings
+                if meaning.get("example") not in (None, "", "N/A")
+            ][:3]
+        if examples:
+            lines.append("")
+            lines.append("✏️ 例句:")
+            for original, translated in examples:
+                lines.append(f"  • {original}")
+                if translated:
+                    lines.append(f"    {translated}")
+
+        web_translations = self.youdao.extract_web_translations(youdao_data)
+        if web_translations:
+            lines.append("")
+            lines.append("🌐 专业/网络释义:")
+            lines.extend(web_translations)
+
+        if (
+            not definitions
+            and not cambridge_meanings
+            and youdao_data.get("translation")
+        ):
+            lines.append("💡 基础翻译:")
+            lines.append("  " + ", ".join(youdao_data["translation"]))
+
+        if not lines:
+            with open("/tmp/sioyek_dict_debug.log", "a") as debug_file:
+                debug_file.write(f"[未解析] keys={list(youdao_data.keys())}\n")
+            return "未找到该词的详细释义。"
+
+        return "\n".join(lines)
+
+
+class DictionaryService:
+    def __init__(
+        self,
+        youdao: Optional[YoudaoDictionary] = None,
+        cambridge: Optional[CambridgeDictionaryScraper] = None,
+    ):
+        self.youdao = youdao or YoudaoDictionary()
+        self.cambridge = cambridge or CambridgeDictionaryScraper()
+        self.formatter = DictionaryFormatter(self.youdao)
+
+    def query(self, word: str) -> str:
+        youdao_data = self.youdao.fetch_word(word)
+        prototype = self.youdao.extract_prototype(youdao_data)
+        prototype_data = None
+        if prototype and prototype.lower() != word.lower():
+            prototype_data = self.youdao.fetch_word(prototype)
+        cambridge_data = self.cambridge.fetch_word(word)
+        return self.formatter.format(
+            youdao_data,
+            prototype_data,
+            cambridge_data,
+            prototype,
         )
-        return
-    except Exception:
-        pass
 
-    with open("/tmp/sioyek_dict_debug.log", "a") as f:
-        f.write(f"[弹窗失败] {word}: {message}\n")
+
+class PopupNotifier:
+    def __init__(self):
+        os.environ.setdefault("DISPLAY", ":0")
+        os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
+        os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+
+    def show(self, word: str, message: str):
+        safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        command = [
+            "zenity",
+            "--info",
+            f"--title=📖 {word}",
+            f"--text={safe}",
+            "--width=520",
+            "--ok-label=关闭",
+        ]
+        try:
+            if (
+                subprocess.run(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                ).returncode
+                == 0
+            ):
+                return
+        except FileNotFoundError:
+            pass
+
+        try:
+            flat_message = message.replace("\n", " | ")
+            subprocess.run(
+                ["notify-send", f"📖 {word}", flat_message, "-t", "8000"],
+                check=True,
+            )
+            return
+        except Exception:
+            pass
+
+        with open("/tmp/sioyek_dict_debug.log", "a") as debug_file:
+            debug_file.write(f"[弹窗失败] {word}: {message}\n")
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1].strip():
         word = sys.argv[1].strip().strip('"').strip("'").strip()
-        data = get_youdao_dict(word)
-        prototype = extract_prototype(data)
-        proto_data = None
-        if prototype and prototype.lower() != word.lower():
-            proto_data = get_youdao_dict(prototype)
-        show_popup(word, format_dict_data(data, proto_data, prototype))
+        message = DictionaryService().query(word)
+        PopupNotifier().show(word, message)
