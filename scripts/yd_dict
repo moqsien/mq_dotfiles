@@ -4,173 +4,13 @@ import gzip
 import html
 import json
 import os
-import random
 import re
 import subprocess
 import sys
-import time
-import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
-from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
-
-
-class CambridgeDictParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.result = {
-            "word": "N/A",
-            "pos": "N/A",
-            "uk_pron": "N/A",
-            "us_pron": "N/A",
-            "meanings": [],
-        }
-        self.capture_state = None
-        self.current_data: List[str] = []
-        self.tag_stack: List[Tuple[str, str]] = []
-        self.in_uk_pron_block = False
-        self.in_us_pron_block = False
-        self.current_def: Optional[Dict[str, str]] = None
-
-    def handle_starttag(self, tag: str, attrs: List[tuple]):
-        attrs_dict = dict(attrs)
-        cls = attrs_dict.get("class", "")
-        self.tag_stack.append((tag, cls))
-
-        if "headword" in cls or ("tb" in cls and "ttn" in cls):
-            self.capture_state = "word"
-            self.current_data = []
-        elif "pos dpos" in cls:
-            self.capture_state = "pos"
-            self.current_data = []
-        elif "uk dpron-i" in cls:
-            self.in_uk_pron_block = True
-        elif "us dpron-i" in cls:
-            self.in_us_pron_block = True
-        elif "pron dpron" in cls and self.in_uk_pron_block:
-            self.capture_state = "uk_pron"
-            self.current_data = []
-        elif "pron dpron" in cls and self.in_us_pron_block:
-            self.capture_state = "us_pron"
-            self.current_data = []
-        elif "def ddef_d db" in cls:
-            self._save_current_definition()
-            self.current_def = {"definition": "", "example": "N/A"}
-            self.capture_state = "definition"
-            self.current_data = []
-        elif "examp dexamp" in cls or "eg deg" in cls:
-            self.capture_state = "example"
-            self.current_data = []
-
-    def handle_endtag(self, tag: str):
-        if not self.tag_stack:
-            return
-
-        popped_tag, popped_cls = self.tag_stack.pop()
-
-        if self.capture_state == "word" and (
-            "headword" in popped_cls or ("tb" in popped_cls and "ttn" in popped_cls)
-        ):
-            self.result["word"] = self._clean_text("".join(self.current_data)).lower()
-            self.capture_state = None
-        elif self.capture_state == "pos" and "pos dpos" in popped_cls:
-            self.result["pos"] = self._clean_text("".join(self.current_data))
-            self.capture_state = None
-        elif "uk dpron-i" in popped_cls:
-            self.in_uk_pron_block = False
-        elif "us dpron-i" in popped_cls:
-            self.in_us_pron_block = False
-        elif self.capture_state == "uk_pron" and "pron dpron" in popped_cls:
-            raw = "".join(self.current_data)
-            match = re.search(r"/[^/]+/", raw)
-            self.result["uk_pron"] = match.group(0) if match else self._clean_text(raw)
-            self.capture_state = None
-        elif self.capture_state == "us_pron" and "pron dpron" in popped_cls:
-            raw = "".join(self.current_data)
-            match = re.search(r"/[^/]+/", raw)
-            self.result["us_pron"] = match.group(0) if match else self._clean_text(raw)
-            self.capture_state = None
-        elif self.capture_state == "definition" and "def ddef_d db" in popped_cls:
-            if self.current_def is not None:
-                self.current_def["definition"] = self._clean_text(
-                    "".join(self.current_data)
-                )
-            self.capture_state = None
-        elif self.capture_state == "example" and (
-            "examp dexamp" in popped_cls or "eg deg" in popped_cls
-        ):
-            if self.current_def is not None:
-                self.current_def["example"] = self._clean_text(
-                    "".join(self.current_data)
-                )
-            self.capture_state = None
-        elif "def-block ddef_block" in popped_cls:
-            self._save_current_definition()
-            self.current_def = None
-
-    def handle_data(self, data: str):
-        if self.capture_state:
-            self.current_data.append(data)
-
-    def _save_current_definition(self):
-        if self.current_def and self.current_def.get("definition"):
-            self.result["meanings"].append(self.current_def)
-
-    @staticmethod
-    def _clean_text(text: str) -> str:
-        return html.unescape(re.sub(r"\s+", " ", text).strip())
-
-
-class CambridgeDictionaryScraper:
-    def __init__(
-        self,
-        headers: Optional[Dict[str, str]] = None,
-        timeout: int = 10,
-        delay: bool = True,
-    ):
-        self.headers = headers or {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        self.timeout = timeout
-        self.delay = delay
-
-    def fetch_word(self, word: str, max_retries: int = 3) -> Dict[str, Any]:
-        safe_word = word.strip().replace(" ", "-")
-        url = f"https://dictionary.cambridge.org/dictionary/english/{urllib.parse.quote(safe_word)}"
-
-        for attempt in range(max_retries):
-            try:
-                if self.delay:
-                    time.sleep(random.uniform(1.0, 2.0))
-                req = urllib.request.Request(url, headers=self.headers, method="GET")
-                with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                    html_content = response.read().decode("utf-8", errors="ignore")
-
-                parser = CambridgeDictParser()
-                parser.feed(html_content)
-                parser.close()
-                parser.result["meanings"] = parser.result["meanings"][:3]
-                return parser.result
-            except urllib.error.HTTPError as error:
-                if error.code == 404:
-                    return {"error": f"未找到单词: '{word}'"}
-                if error.code == 403:
-                    return {"error": "被 Cloudflare 拦截 (403)"}
-                if error.code == 429:
-                    if self.delay:
-                        time.sleep(5 * (attempt + 1))
-                    continue
-            except Exception as error:
-                if attempt == max_retries - 1:
-                    return {"error": str(error)}
-                if self.delay:
-                    time.sleep(2**attempt)
-
-        return {"error": f"达到最大重试次数: '{word}'"}
 
 
 class YoudaoDictionary:
@@ -207,12 +47,19 @@ class YoudaoDictionary:
 
     @staticmethod
     def _decode_json(raw_data: bytes) -> Dict[str, Any]:
-        return json.loads(raw_data.decode("utf-8"))
+        if raw_data.startswith(b"\xef\xbb\xbf"):
+            raw_data = raw_data[3:]
+        try:
+            text = raw_data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw_data.decode("gb18030")
+        return json.loads(text)
 
     @staticmethod
     def clean(text: Any) -> str:
         if not isinstance(text, str):
             return str(text)
+        text = html.unescape(text)
         return re.sub(r"</?[^>]+>", "", text).strip()
 
     @classmethod
@@ -299,33 +146,91 @@ class YoudaoDictionary:
                 if text:
                     translations.append(cls.clean(text))
             if translations:
-                definitions.append(
-                    f"[{pos}] {'; '.join(translations)}"
-                    if pos
-                    else "; ".join(translations)
-                )
+                translation_text = "; ".join(translations)
+                if pos:
+                    definitions.append(f"[{pos}] {translation_text}")
+                else:
+                    definitions.append(translation_text)
 
         for word in (data.get("ec") or {}).get("word", []):
             if isinstance(word, dict):
                 for group in word.get("trs", []):
                     cls._walk_trs(group, definitions)
 
-        for collins in (data.get("collins") or {}).get("collins_entries", []):
-            for entry in (collins.get("entries") or {}).get("entry", []):
-                for translation_entry in entry.get("tran_entry", []):
-                    translation = cls.clean(translation_entry.get("tran", ""))
-                    pos = (translation_entry.get("pos_entry") or {}).get("pos", "")
-                    if translation:
+        return cls._unique(definitions)
+
+    @classmethod
+    def extract_english_definitions(cls, data: Dict[str, Any]) -> List[str]:
+        definitions: List[str] = []
+
+        ee = data.get("ee") or {}
+        word = ee.get("word") if isinstance(ee, dict) else {}
+        for group in cls._items((word or {}).get("trs")):
+            pos = group.get("pos", "")
+            for translation in cls._items(group.get("tr")):
+                for definition in cls._texts_from_l(translation.get("l")):
+                    definition = cls.clean(definition)
+                    if definition:
                         definitions.append(
-                            f"[{pos}] {translation}" if pos else translation
+                            f"[{pos}] {definition}" if pos else definition
                         )
 
+        collins = data.get("collins") or {}
+        if isinstance(collins, dict):
+            for collection in cls._items(collins.get("collins_entries")):
+                entries = collection.get("entries") or {}
+                for entry in cls._items(entries.get("entry")):
+                    for translation_entry in cls._items(entry.get("tran_entry")):
+                        translation = cls.clean(translation_entry.get("tran", ""))
+                        translation = cls._english_prefix(translation)
+                        if translation:
+                            pos_entry = translation_entry.get("pos_entry") or {}
+                            pos = pos_entry.get("pos", "")
+                            definitions.append(
+                                f"[{pos}] {translation}" if pos else translation
+                            )
+
+        webster = data.get("webster") or {}
+        if isinstance(webster, dict):
+            values = []
+            for key in ("definitions", "definition", "shortdef", "short_definitions"):
+                values.extend(cls._texts_from_l(webster.get(key)))
+            for entry in cls._items(webster.get("entries")):
+                for key in (
+                    "definitions",
+                    "definition",
+                    "shortdef",
+                    "short_definitions",
+                ):
+                    values.extend(cls._texts_from_l(entry.get(key)))
+            definitions.extend(
+                text
+                for value in values
+                if (text := cls._english_prefix(cls.clean(value)))
+            )
+
+        return cls._unique(definitions)
+
+    @staticmethod
+    def _items(node: Any) -> List[Dict[str, Any]]:
+        if isinstance(node, dict):
+            return [node]
+        if isinstance(node, list):
+            return [item for item in node if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _english_prefix(text: str) -> str:
+        return re.split(r"[\u3400-\u9fff]", text, maxsplit=1)[0].strip(" ;,")
+
+    @staticmethod
+    def _unique(values: List[str]) -> List[str]:
         unique: List[str] = []
         seen = set()
-        for definition in definitions:
-            if definition and definition not in seen:
-                seen.add(definition)
-                unique.append(definition)
+        for value in values:
+            if value and value not in seen:
+                seen.add(value)
+                unique.append(value)
         return unique
 
     @classmethod
@@ -381,28 +286,26 @@ class DictionaryFormatter:
         self,
         youdao_data: Dict[str, Any],
         prototype_data: Optional[Dict[str, Any]],
-        cambridge_data: Dict[str, Any],
         prototype: str = "",
     ) -> str:
         lines: List[str] = []
         if "error" in youdao_data:
-            lines.append(f"❌ 请求失败: {youdao_data['error']}")
-        youdao_uk, youdao_us, youdao_phonetic = self.youdao.extract_phones(youdao_data)
-        cambridge_uk = cambridge_data.get("uk_pron", "")
-        cambridge_us = cambridge_data.get("us_pron", "")
-        if cambridge_uk == "N/A":
-            cambridge_uk = ""
-        if cambridge_us == "N/A":
-            cambridge_us = ""
-        uk = youdao_uk or cambridge_uk
-        us = youdao_us or cambridge_us
-        if uk or us:
-            lines.append(f"🇬🇧 [{uk}]   🇺🇸 [{us}]")
-        elif youdao_phonetic:
-            lines.append(f"🔊 [{youdao_phonetic}]")
+            lines.append(f"请求失败: {youdao_data['error']}")
 
+        youdao_uk, youdao_us, youdao_phonetic = self.youdao.extract_phones(youdao_data)
+        uk = youdao_uk
+        us = youdao_us
+        if uk or us:
+            phones = []
+            if uk:
+                phones.append(f"UK [{uk}]")
+            if us:
+                phones.append(f"US [{us}]")
+            lines.append("发音  " + "    ".join(phones))
+        elif youdao_phonetic:
+            lines.append(f"发音  [{youdao_phonetic}]")
         if prototype:
-            lines.append(f"↪ 原形: {prototype}")
+            lines.append(f"原形: {prototype}")
         if uk or us or youdao_phonetic or prototype:
             lines.append("-" * 45)
 
@@ -412,55 +315,49 @@ class DictionaryFormatter:
                 if definition not in definitions:
                     definitions.append(definition)
         for definition in definitions[:8]:
-            lines.append(f"• {definition}")
+            lines.append(f"- {definition}")
 
-        cambridge_meanings = [
-            meaning
-            for meaning in cambridge_data.get("meanings", [])
-            if meaning.get("definition")
-        ]
-        if cambridge_meanings:
+        english_definitions = self.youdao.extract_english_definitions(youdao_data)
+        if prototype_data:
+            for definition in self.youdao.extract_english_definitions(prototype_data):
+                if definition not in english_definitions:
+                    english_definitions.append(definition)
+        if english_definitions:
             if definitions:
                 lines.append("")
-            lines.append("📘 Cambridge English definitions:")
-            for meaning in cambridge_meanings:
-                pos = cambridge_data.get("pos", "")
-                prefix = f"[{pos}] " if pos and pos != "N/A" else ""
-                lines.append(f"  • {prefix}{meaning['definition']}")
+            lines.append("英英释义:")
+            for definition in english_definitions[:8]:
+                lines.append(f"  - {definition}")
 
         examples = self.youdao.extract_examples(youdao_data)
         if not examples and prototype_data:
             examples = self.youdao.extract_examples(prototype_data)
-        if not examples:
-            examples = [
-                (meaning.get("example", ""), "")
-                for meaning in cambridge_meanings
-                if meaning.get("example") not in (None, "", "N/A")
-            ][:3]
         if examples:
             lines.append("")
-            lines.append("✏️ 例句:")
+            lines.append("例句:")
             for original, translated in examples:
-                lines.append(f"  • {original}")
+                lines.append(f"  - {original}")
                 if translated:
                     lines.append(f"    {translated}")
 
         web_translations = self.youdao.extract_web_translations(youdao_data)
         if web_translations:
             lines.append("")
-            lines.append("🌐 专业/网络释义:")
+            lines.append("专业/网络释义:")
             lines.extend(web_translations)
 
         if (
             not definitions
-            and not cambridge_meanings
+            and not english_definitions
             and youdao_data.get("translation")
         ):
-            lines.append("💡 基础翻译:")
+            lines.append("基础翻译:")
             lines.append("  " + ", ".join(youdao_data["translation"]))
 
         if not lines:
-            with open("/tmp/sioyek_dict_debug.log", "a") as debug_file:
+            with open(
+                "/tmp/sioyek_dict_debug.log", "a", encoding="utf-8"
+            ) as debug_file:
                 debug_file.write(f"[未解析] keys={list(youdao_data.keys())}\n")
             return "未找到该词的详细释义。"
 
@@ -471,10 +368,8 @@ class DictionaryService:
     def __init__(
         self,
         youdao: Optional[YoudaoDictionary] = None,
-        cambridge: Optional[CambridgeDictionaryScraper] = None,
     ):
         self.youdao = youdao or YoudaoDictionary()
-        self.cambridge = cambridge or CambridgeDictionaryScraper()
         self.formatter = DictionaryFormatter(self.youdao)
 
     def query(self, word: str) -> str:
@@ -483,27 +378,24 @@ class DictionaryService:
         prototype_data = None
         if prototype and prototype.lower() != word.lower():
             prototype_data = self.youdao.fetch_word(prototype)
-        cambridge_data = self.cambridge.fetch_word(word)
         return self.formatter.format(
             youdao_data,
             prototype_data,
-            cambridge_data,
             prototype,
         )
 
 
 class PopupNotifier:
     def __init__(self):
-        os.environ.setdefault("DISPLAY", ":0")
-        os.environ.setdefault("WAYLAND_DISPLAY", "wayland-0")
-        os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            os.environ["DISPLAY"] = ":0"
 
     def show(self, word: str, message: str):
         safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         command = [
             "zenity",
             "--info",
-            f"--title=📖 {word}",
+            f"--title=词典 · {word}",
             f"--text={safe}",
             "--width=520",
             "--ok-label=关闭",
@@ -522,14 +414,14 @@ class PopupNotifier:
         try:
             flat_message = message.replace("\n", " | ")
             subprocess.run(
-                ["notify-send", f"📖 {word}", flat_message, "-t", "8000"],
+                ["notify-send", f"词典 · {word}", flat_message, "-t", "8000"],
                 check=True,
             )
             return
         except Exception:
             pass
 
-        with open("/tmp/sioyek_dict_debug.log", "a") as debug_file:
+        with open("/tmp/sioyek_dict_debug.log", "a", encoding="utf-8") as debug_file:
             debug_file.write(f"[弹窗失败] {word}: {message}\n")
 
 
