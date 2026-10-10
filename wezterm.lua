@@ -152,13 +152,41 @@ wezterm.on("gui-startup", function(cmd)
 	})
 end)
 
+-- wezterm.on("gui-startup", function(cmd)
+-- 	local tab, main_pane, window = mux.spawn_window(cmd or {})
+--
+-- 	-- 【核心破局点 1：使用整数绝对值】
+-- 	-- 绝对不能用 0.15 这种小数！Wayland 启动瞬间窗口像素是 0，算小数直接崩溃。
+-- 	-- 直接传整数，代表“字符列数/行数”。WezTerm 在 0 像素时依然能分配出逻辑字符网格。
+-- 	local right_pane = main_pane:split({
+-- 		direction = "Right",
+-- 		size = 40, -- 直接划出 40 个字符宽度的面板（千万不要加 {cells=}，直接写数字）
+-- 	})
+--
+-- 	if right_pane then
+-- 		right_pane:split({
+-- 			direction = "Bottom",
+-- 			size = 20, -- 直接划出 20 个字符高度的面板
+-- 		})
+-- 	end
+--
+-- 	main_pane:activate()
+--
+-- 	-- 【核心破局点 2：把最大化踢给系统 Shell】
+-- 	-- 不要用 wezterm.time 去猜时间了。直接起一个脱离 WezTerm 控制的 Linux 后台进程。
+-- 	-- 让 Shell 也就是 Bash 自己去睡 0.5 秒，等 WezTerm 彻底画出来后，一脚把 Niri 撑满。
+-- 	wezterm.background_child_process({
+-- 		"sh",
+-- 		"-c",
+-- 		"sleep 0.5 && niri msg action maximize-column",
+-- 	})
+-- end)
+
 -- ====================================================
 -- 2. 基础行为与 UI 外观 (深度复刻 tmux 体验)
 -- ====================================================
 -- 默认使用 zsh
 config.default_prog = { "zsh", "-l" }
-
-config.font = wezterm.font("JetBrains Mono Nerd Font")
 
 -- 保持纯血 Wayland 运行
 config.enable_wayland = true
@@ -183,6 +211,61 @@ config.macos_window_background_blur = 20
 
 -- 设置 Leader 键为 Ctrl+B (等待时间 1000ms)
 config.leader = { key = "b", mods = "CTRL", timeout_milliseconds = 1000 }
+
+config.key_tables = {
+	copy_mode = {
+		-- ================= 你的自定义键位 =================
+		{ key = "H", mods = "SHIFT", action = act.CopyMode("MoveToStartOfLine") },
+		{ key = "L", mods = "SHIFT", action = act.CopyMode("MoveToEndOfLineContent") },
+		{ key = "^", mods = "SHIFT", action = act.CopyMode("MoveToStartOfLineContent") },
+
+		-- ================= 基础移动 (h/j/k/l) =================
+		{ key = "h", action = act.CopyMode("MoveLeft") },
+		{ key = "j", action = act.CopyMode("MoveDown") },
+		{ key = "k", action = act.CopyMode("MoveUp") },
+		{ key = "l", action = act.CopyMode("MoveRight") },
+
+		-- ================= 单词移动 (w/b/e) =================
+		{ key = "w", action = act.CopyMode("MoveForwardWord") },
+		{ key = "b", action = act.CopyMode("MoveBackwardWord") },
+		{ key = "e", action = act.CopyMode("MoveForwardWordEnd") },
+
+		-- ================= 行首/行尾 (0/$) =================
+		{ key = "0", action = act.CopyMode("MoveToStartOfLine") },
+		{ key = "$", mods = "SHIFT", action = act.CopyMode("MoveToEndOfLineContent") },
+
+		-- ================= 翻页 (Ctrl+u/d/b/f) =================
+		{ key = "u", mods = "CTRL", action = act.CopyMode("PageUp") },
+		{ key = "d", mods = "CTRL", action = act.CopyMode("PageDown") },
+		{ key = "b", mods = "CTRL", action = act.CopyMode("PageUp") },
+		{ key = "f", mods = "CTRL", action = act.CopyMode("PageDown") },
+
+		-- ================= 顶部/底部 (g/G) =================
+		{ key = "g", action = act.CopyMode("MoveToScrollbackTop") },
+		{ key = "G", mods = "SHIFT", action = act.CopyMode("MoveToScrollbackBottom") },
+
+		-- ================= 选择模式 (v/V/Ctrl+v) =================
+		{ key = "v", action = act.CopyMode({ SetSelectionMode = "Cell" }) },
+		{ key = "V", mods = "SHIFT", action = act.CopyMode({ SetSelectionMode = "Line" }) },
+		{ key = "v", mods = "CTRL", action = act.CopyMode({ SetSelectionMode = "Block" }) },
+
+		-- ================= 复制与退出 (y/Esc) =================
+		{ key = "y", action = act.CopyTo("ClipboardAndPrimarySelection") },
+		{ key = "Escape", action = act.CopyMode("Close") },
+		-- ================= 搜索功能 =================
+		{ key = "/", action = act.CopyMode("EditPattern") },
+		{ key = "n", action = act.CopyMode("NextMatch") },
+		{ key = "N", mods = "SHIFT", action = act.CopyMode("PriorMatch") },
+	},
+	-- ================= 新增：搜索输入模式 (search_mode) =================
+	search_mode = {
+		-- 按 Enter 确认搜索词，并返回到 copy_mode (这样 n/N 才能生效)
+		{ key = "Enter", action = act.CopyMode("AcceptPattern") },
+
+		-- 按 Esc 直接退出整个 Copy Mode (可选)
+		{ key = "Escape", action = act.CopyMode("Close") },
+	},
+}
 
 -- ====================================================
 -- 3. 快捷键配置 (Key Bindings)
@@ -234,6 +317,7 @@ config.keys = {
 	{ key = "c", mods = "CTRL|SHIFT", action = act.ActivateCopyMode },
 }
 
+-- 设置鼠标绑定：选中即复制到系统剪贴板（并在点击链接时打开它）
 -- 设置鼠标绑定：选中即复制到系统剪贴板（并在点击链接时打开它）
 config.enable_wayland = true
 
@@ -296,5 +380,13 @@ config.colors = {
 		"#d3c6aa",
 	},
 }
+
+-- config.font = wezterm.font("JetBrainsMono Nerd Font")
+config.font = wezterm.font("MesloLGS Nerd Font")
+config.font_size = 12.0
+
+-- 开启 kitty 键盘协议：让终端能把 Ctrl+Shift+O 等组合键与 Ctrl+O 区分开，
+-- Neovim 0.10+ 检测到终端支持后会自动启用增强键盘处理。
+config.enable_kitty_keyboard = true
 
 return config
