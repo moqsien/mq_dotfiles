@@ -118,9 +118,28 @@ if command -v omp >/dev/null 2>&1; then
     (omp update >/dev/null 2>&1 &!)
 fi
 
+# Package installation helper
+install_packages() {
+    if [ "$#" -ne 1 ]; then
+        printf "Usage: install_packages <package>\n" >&2
+        return 1
+    fi
+
+    local package="$1"
+    if command -v "$package" >/dev/null 2>&1; then
+        return 0
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S "$package"
+    elif command -v apt >/dev/null 2>&1; then
+        sudo apt install "$package"
+    else
+        printf "Unsupported package manager. Install packages manually.\n" >&2
+        return 1
+    fi
+}
+
 # https://github.com/ajeetdsouza/zoxide
-# sudo pacman -S zoxide
-# sudo apt install zoxide
+install_packages zoxide
 eval "$(zoxide init zsh)"
 
 # https://github.com/jeffreytse/zsh-vi-mode
@@ -150,16 +169,14 @@ bindkey -M emacs -r "^R"
 bindkey -M viins -r "^R"
 
 # https://github.com/junegunn/fzf
-# sudo pacman -S fzf
-# sudo apt install fzf
+install_packages fzf
 source <(fzf --zsh)
 
 # https://github.com/starship/starship
-# sudo  pacman -S starship
-# sudo apt install starship
 # config/starship.toml:
 # format = "$directory$git_branch$git_commit$git_state$git_metrics$git_status$character"
 # add_newline = false
+install_packages starship
 export STARSHIP_CONFIG=$HOME/.config/starship.toml
 eval "$(starship init zsh)"
 
