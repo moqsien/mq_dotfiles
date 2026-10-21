@@ -212,6 +212,7 @@ config.macos_window_background_blur = 20
 -- 设置 Leader 键为 Ctrl+B (等待时间 1000ms)
 config.leader = { key = "b", mods = "CTRL", timeout_milliseconds = 1000 }
 
+-- copy mode
 config.key_tables = {
 	copy_mode = {
 		-- ================= 你的自定义键位 =================
@@ -251,7 +252,13 @@ config.key_tables = {
 
 		-- ================= 复制与退出 (y/Esc) =================
 		{ key = "y", action = act.CopyTo("ClipboardAndPrimarySelection") },
+		{ key = "p", action = act.Multiple({
+			act.PasteFrom("Clipboard"),
+			act.CopyMode("Close"),
+		}) },
 		{ key = "Escape", action = act.CopyMode("Close") },
+		{ key = "q", action = act.CopyMode("Close") },
+
 		-- ================= 搜索功能 =================
 		{ key = "/", action = act.CopyMode("EditPattern") },
 		{ key = "n", action = act.CopyMode("NextMatch") },
