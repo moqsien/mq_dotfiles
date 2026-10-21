@@ -1,0 +1,180 @@
+# =================
+# env
+# =================
+
+export ZSH_PLUGINS="$HOME/.zsh_plugins"
+export MY_PROJ="$HOME/my_projects"
+export VIBE_PROJ="$HOME/vibe_projects"
+
+. "$HOME/.cargo/env"
+export GOPATH="$MY_PROJ/go"
+export GOBIN="$GOPATH/bin"
+export PATH="$PATH:$GOBIN"
+export PATH="$HOME/.bun/bin:$PATH"
+
+export ANDROID_HOME="$HOME/Android/Sdk"
+export PATH=$PATH:$ANDROID_HOME/emulator
+export PATH=$PATH:$ANDROID_HOME/platform-tools
+export PATH=$PATH:$ANDROID_HOME/tools
+export PATH=$PATH:$ANDROID_HOME/tools/bin
+export _JAVA_AWT_WM_NONREPARENTING=1
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+
+export NOTION_API_TOKEN=""
+export QT_QPA_PLATFORM=wayland
+
+# =================
+# alias
+# =================
+
+alias OnProxy="export http_proxy=http://127.0.0.1:2023;export https_proxy=http://127.0.0.1:2023;export no_proxy=127.0.0.1,localhost,::1"
+alias OffProxy="unset http_proxy;unset https_proxy"
+
+# alias node="bun"
+alias nv="OMP_PROFILE=codex nvim"
+alias nvc="OMP_PROFILE=codex nvim"
+alias nvd="OMP_PROFILE=deepseek nvim"
+
+alias authawsdorcker="aws ecr get-login --no-include-email --region ap-southeast-1 |  bash"
+alias authproddocker="aws ecr get-login --no-include-email --region us-west-2 | bash"
+alias vibedoc="docker compose -f $VIBE_PROJ/inlight-board/backend/go/doc/docker-compose.yml up"
+alias bedoc="docker compose -f $VIBE_PROJ/docker/be-docs.yml up"
+alias nvgo="nv $VIBE_PROJ/inlight-board/backend/go"
+alias cdgo="cd $VIBE_PROJ/inlight-board/backend/go"
+alias nvproto="nv $VIBE_PROJ/inlight-board/proto"
+alias cdproto="cd $VIBE_PROJ/inlight-board/proto"
+alias nvdoc="nv $VIBE_PROJ/backend_docs"
+alias cddoc="cd $VIBE_PROJ/backend_docs"
+alias nvswg="nv $VIBE_PROJ/swagger-docs"
+alias cdswg="cd $VIBE_PROJ/swagger-docs"
+alias nvzsh="nv $HOME/.zshrc"
+# alias loginhela="ssh hela@hela.local"
+# alias pm="atac"
+alias xz="/usr/bin/xz"
+alias cp="xcp"
+alias winfo="niri msg pick-window"
+alias open="gio open"
+
+alias ga="git add"
+alias gc="git commit"
+alias gp="git push"
+alias gpl="git pull"
+alias gst="git status"
+alias gsw="git switch -C"
+alias gswt="git switch --track"
+alias gbde="git branch -d"
+alias gbl="git branch -l"
+alias gch="git checkout"
+alias gco="git checkout ."
+alias gd="git diff"
+alias gpmm="git fetch origin && git merge origin/master"
+alias gr="git reset --soft HEAD~1"
+
+# Aliases Help
+h() {
+    echo -e "\033[1;34m=== My Custom Aliases Help ===\033[0m"
+    printf "\033[1;32m%-15s\033[0m | %s\n" "Command" "Description"
+    echo "------------------------------------------------------------"    
+    echo -e "\n\033[1;33m[ AWS / Docker ]\033[0m"
+    printf "%-15s | %s\n" "authawsdorcker" "Login to ECR (ap-southeast-1)"
+    printf "%-15s | %s\n" "authproddocker" "Login to ECR (us-west-2)"
+
+    echo -e "\n\033[1;33m[ Navigation & Edit (Go / Proto / Docs) ]\033[0m"
+    printf "%-15s | %s\n" "cdgo / hxgo" "Go to / Edit Backend Go project"
+    printf "%-15s | %s\n" "cdproto / hxproto" "Go to / Edit Proto files"
+    printf "%-15s | %s\n" "cddoc / hxdoc" "Go to / Edit Backend Docs"
+    printf "%-15s | %s\n" "cdswg / hxswg" "Go to / Edit Swagger Docs"
+    printf "%-15s | %s\n" "hxlan" "Edit helix languages.toml"
+    printf "%-15s | %s\n" "hxgho" "Edit ghostty config file"
+    printf "%-15s | %s\n" "hxfcodec" "Edit fcode config files"
+    printf "%-15s | %s\n" "hxzsh" "Edit .zshrc"
+
+    echo -e "\n\033[1;33m[ Git Shortcuts ]\033[0m"
+    printf "%-15s | %s\n" "ga / gc" "Git Add/ Git Commit"
+    printf "%-15s | %s\n" "gst / gd" "Git Status / Git Diff"
+    printf "%-15s | %s\n" "gp / gpl" "Git Push / Git Pull"
+    printf "%-15s | %s\n" "gch / gco" "Git Checkout / Git Checkout current dir"
+    printf "%-15s | %s\n" "gsw / gswt" "Git Switch (New Branch) / Track"
+    printf "%-15s | %s\n" "gbl / gbde" "List Branches / Delete Branch"
+    printf "%-15s | %s\n" "gpmm" "Fetch and Merge origin/master"
+    
+    echo -e "\n\033[1;33m[ Others ]\033[0m"
+    printf "%-15s | %s\n" "pm" "atac: a postman-like tool in cmdline"
+    printf "%-15s | %s\n" "hx" "Restart fcode service and open Helix"
+    printf "%-15s | %s\n" "loginhela" "SSH into hela.local"
+    printf "%-15s | %s\n" "vibedoc" "Docker compose up for backend docs"
+    echo "------------------------------------------------------------"
+}
+
+# =================
+# plugins
+# =================
+
+# update omp asynchrously
+# https://github.com/can1357/oh-my-pi
+if command -v omp >/dev/null 2>&1; then
+    (omp update >/dev/null 2>&1 &!)
+fi
+
+# https://github.com/ajeetdsouza/zoxide
+# sudo pacman -S zoxide
+# sudo apt install zoxide
+eval "$(zoxide init zsh)"
+
+# https://github.com/jeffreytse/zsh-vi-mode
+function zvm_after_init() {
+  bindkey "^R" fzf-history-widget
+}
+zvm_download_url="https://github.com/jeffreytse/zsh-vi-mode/archive/refs/heads/master.zip"
+zvm_plugin_file="$ZSH_PLUGINS/zsh-vi-mode/zsh-vi-mode.plugin.zsh"
+if [ ! -d "$ZSH_PLUGINS" ]; then
+    mkdir -p "$ZSH_PLUGINS"
+fi
+
+if [ ! -f "$zvm_plugin_file" ]; then
+    zvm_tmp_dir=$(mktemp -d)
+    command curl -fsSL "$zvm_download_url" -o "$zvm_tmp_dir/zsh-vi-mode.zip" &&
+        command unzip -q "$zvm_tmp_dir/zsh-vi-mode.zip" -d "$zvm_tmp_dir" &&
+        mv "$zvm_tmp_dir/zsh-vi-mode-master" "$ZSH_PLUGINS/zsh-vi-mode"
+    rm -rf "$zvm_tmp_dir"
+fi
+
+if [ -f "$zvm_plugin_file" ]; then
+    source "$zvm_plugin_file"
+fi
+
+ZVM_VI_INSERT_ESCAPE_BINDKEY=jk
+bindkey -M emacs -r "^R"
+bindkey -M viins -r "^R"
+
+# https://github.com/junegunn/fzf
+# sudo pacman -S fzf
+# sudo apt install fzf
+source <(fzf --zsh)
+
+# https://github.com/starship/starship
+# sudo  pacman -S starship
+# sudo apt install starship
+# config/starship.toml:
+# format = "$directory$git_branch$git_commit$git_state$git_metrics$git_status$character"
+# add_newline = false
+export STARSHIP_CONFIG=$HOME/.config/starship.toml
+eval "$(starship init zsh)"
+
+# https://github.com/zsh-users/zsh-autosuggestions
+zsh_autosuggestions_download_url="https://github.com/zsh-users/zsh-autosuggestions/archive/refs/heads/master.zip"
+zsh_autosuggestions_plugin="$ZSH_PLUGINS/zsh-autosuggestions/zsh-autosuggestions.zsh"
+if [ ! -f "$zsh_autosuggestions_plugin" ]; then
+    zsh_autosuggestions_tmp_dir=$(mktemp -d)
+    command curl -fsSL "$zsh_autosuggestions_download_url" -o "$zsh_autosuggestions_tmp_dir/zsh-autosuggestions.zip" &&
+        command unzip -q "$zsh_autosuggestions_tmp_dir/zsh-autosuggestions.zip" -d "$zsh_autosuggestions_tmp_dir" &&
+        mv "$zsh_autosuggestions_tmp_dir/zsh-autosuggestions-master" "$ZSH_PLUGINS/zsh-autosuggestions"
+    rm -rf "$zsh_autosuggestions_tmp_dir"
+fi
+
+if [ -f "$zsh_autosuggestions_plugin" ]; then
+    source "$zsh_autosuggestions_plugin"
+fi
+
