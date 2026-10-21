@@ -218,7 +218,6 @@ config.key_tables = {
 		-- ================= 你的自定义键位 =================
 		{ key = "H", mods = "SHIFT", action = act.CopyMode("MoveToStartOfLine") },
 		{ key = "L", mods = "SHIFT", action = act.CopyMode("MoveToEndOfLineContent") },
-		{ key = "^", mods = "SHIFT", action = act.CopyMode("MoveToStartOfLineContent") },
 
 		-- ================= 基础移动 (h/j/k/l) =================
 		{ key = "h", action = act.CopyMode("MoveLeft") },
@@ -230,10 +229,6 @@ config.key_tables = {
 		{ key = "w", action = act.CopyMode("MoveForwardWord") },
 		{ key = "b", action = act.CopyMode("MoveBackwardWord") },
 		{ key = "e", action = act.CopyMode("MoveForwardWordEnd") },
-
-		-- ================= 行首/行尾 (0/$) =================
-		{ key = "0", action = act.CopyMode("MoveToStartOfLine") },
-		{ key = "$", mods = "SHIFT", action = act.CopyMode("MoveToEndOfLineContent") },
 
 		-- ================= 翻页 (Ctrl+u/d/b/f) =================
 		{ key = "u", mods = "CTRL", action = act.CopyMode("PageUp") },
