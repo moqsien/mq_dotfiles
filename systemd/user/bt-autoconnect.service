@@ -1,0 +1,17 @@
+[Unit]
+Description=Auto-connect paired Bluetooth audio devices
+Documentation=file:///{path-to-bt-connect}/scripts/bt-autoconnect
+StartLimitIntervalSec=0
+# Start after the session manager so the A2DP media endpoints are registered
+# before the first Connect (otherwise bluetoothd logs
+# "a2dp-sink profile connect failed ... Protocol not available").
+After=wireplumber.service pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/bt-autoconnect
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

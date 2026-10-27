@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+#
+# bt-autoconnect - keep paired Bluetooth audio devices connected.
+#
+# Why this exists: BlueZ never initiates a connection at boot, nor when a
+# bonded headset is powered on. plugins/policy.c only reconnects after a
+# link-supervision timeout or a suspend/resume cycle. So a headset that is
+# switched on after boot connects only if it pages the host itself, or if
+# something (e.g. the Bluetooth settings panel) starts a scan.
+#
+# This daemon polls the bonded audio devices and issues an explicit Connect
+# for the disconnected ones. Once the audio path is up, the sink volume is set
+# to BT_AUTOCONNECT_VOLUME (86%) exactly once per connection, so a later manual
+# volume change is not overwritten by the poll loop.
+#
+# A Connect only counts as success when both hold:
+#   * the link is still up after BT_AUTOCONNECT_HOLD seconds, and
+#   * PipeWire published the bluez card for the device (audio path exists).
+# Earbuds often accept the page, refuse the profile setup (bluetoothd logs
+# "Hands-Free Voice gateway failed connect ... Connection refused") and drop
+# the link ~2s later. Treating that instant "Connected: yes" as success used to
+# reset the backoff, which produced a connect/disconnect storm every 5s and
+# kept the headset busy long enough to delay/prevent the real connection.
+# Transient links now keep the exponential backoff instead.
+#
+# A device that is connected but has no bluez card is bounced once per backoff
+# interval, because a plain Connect is a no-op while the ACL is up.
+#
+# Env:
+#   BT_AUTOCONNECT_MACS             whitespace separated MACs to manage
+#                                   (default: every Paired+Trusted audio device)
+#   BT_AUTOCONNECT_POLL_INTERVAL    seconds between polls (default 5)
+#   BT_AUTOCONNECT_MIN_RETRY        first backoff after a failed attempt (default 10)
+#   BT_AUTOCONNECT_RETRY_MAX        max backoff seconds (default 60)
+#   BT_AUTOCONNECT_CONNECT_TIMEOUT  max seconds per connect attempt (default 20)
+#   BT_AUTOCONNECT_HOLD             seconds a new link must stay up (default 8)
+#   BT_AUTOCONNECT_START_DELAY      settle time before the first attempt, so
+#                                   WirePlumber has registered its A2DP
+#                                   endpoints (default 5)
+#   BT_AUTOCONNECT_VOLUME           sink volume percent applied after a
+#                                   connection (default 86; empty value
+#                                   disables)
+#
+set -u
+
+POLL_INTERVAL=${BT_AUTOCONNECT_POLL_INTERVAL:-5}
+MIN_RETRY=${BT_AUTOCONNECT_MIN_RETRY:-10}
+RETRY_MAX=${BT_AUTOCONNECT_RETRY_MAX:-60}
+CONNECT_TIMEOUT=${BT_AUTOCONNECT_CONNECT_TIMEOUT:-20}
+HOLD=${BT_AUTOCONNECT_HOLD:-8}
+START_DELAY=${BT_AUTOCONNECT_START_DELAY:-5}
+VOLUME=${BT_AUTOCONNECT_VOLUME-86}
+
+log() {
+	printf '%s\n' "$*"
+}
+
+is_connected() {
+	bluetoothctl info "$1" 2>/dev/null | grep -q 'Connected: yes'
+}
+
+# 0 when PipeWire has a card for the MAC, 0 as well when pactl cannot be
+# queried at all (a broken PulseAudio layer must not block reconnects).
+card_present() {
+	local card out
+	card="bluez_card.${1//:/_}"
+	command -v pactl >/dev/null 2>&1 || return 0
+	out=$(pactl list cards short 2>/dev/null) || return 0
+	printf '%s\n' "$out" | grep -q -- "$card"
+}
+
+link_stable() {
+	local i
+	for ((i = 0; i < $2; i++)); do
+		sleep 1
+		is_connected "$1" || return 1
+	done
+	return 0
+}
+
+# Sink PipeWire published for the bluez card of MAC, empty when there is none
+# (profile still switching, card gone, pactl unavailable).
+sink_for() {
+	pactl list short sinks 2>/dev/null |
+	while read -r _ name _; do
+		case $name in
+		bluez_output."${1//:/_}".*)
+			printf '%s\n' "$name"
+			break
+			;;
+		esac
+	done
+}
+
+# Set the volume of MAC's sink to VOLUME percent. The card can be published a
+# moment before its sink, hence the short retry. Returns non-zero when no sink
+# was found, so the caller can retry on a later poll.
+apply_volume() {
+	local mac=$1 sink='' i
+
+	[ -n "$VOLUME" ] || return 0
+	command -v pactl >/dev/null 2>&1 || return 0
+
+	for ((i = 0; i < 6; i++)); do
+		sink=$(sink_for "$mac")
+		[ -n "$sink" ] && break
+		sleep 0.5
+	done
+
+	if [ -z "$sink" ]; then
+		log "no sink for $mac, volume left unchanged"
+		return 1
+	fi
+	if ! pactl set-sink-volume "$sink" "${VOLUME}%" >/dev/null 2>&1; then
+		log "failed to set volume on $sink"
+		return 1
+	fi
+
+	log "volume ${VOLUME}% on $sink ($mac)"
+}
+
+audio_macs() {
+	if [ -n "${BT_AUTOCONNECT_MACS:-}" ]; then
+		printf '%s\n' ${BT_AUTOCONNECT_MACS}
+		return
+	fi
+
+	bluetoothctl devices 2>/dev/null |
+	while read -r _ mac _; do
+		info=$(bluetoothctl info "$mac" 2>/dev/null) || continue
+		case $info in
+		*'Paired: yes'*) ;;
+		*) continue ;;
+		esac
+		case $info in
+		*'Trusted: yes'*) ;;
+		*) continue ;;
+		esac
+		case $info in
+		*'Icon: audio-'*) ;;
+		*) continue ;;
+		esac
+		printf '%s\n' "$mac"
+	done
+}
+
+declare -A next_try=()
+declare -A backoff=()
+declare -A vol_done=()
+
+[ "$START_DELAY" -gt 0 ] && sleep "$START_DELAY"
+
+while :; do
+	now=$(date +%s)
+
+	for mac in $(audio_macs); do
+		connected=0
+		is_connected "$mac" && connected=1
+
+		if [ "$connected" -eq 1 ] && card_present "$mac"; then
+			if [ -n "${next_try[$mac]:-}" ]; then
+				log "healthy $mac"
+			fi
+			unset 'next_try[$mac]' 'backoff[$mac]'
+			if [ -z "${vol_done[$mac]:-}" ]; then
+				apply_volume "$mac" && vol_done[$mac]=1
+			fi
+			continue
+		fi
+
+		# A new connection episode starts only after the link dropped, so the
+		# volume is applied again on the next reconnect.
+		[ "$connected" -eq 0 ] && unset 'vol_done[$mac]'
+
+		if [ "$now" -lt "${next_try[$mac]:-0}" ]; then
+			continue
+		fi
+
+		if [ "$connected" -eq 1 ]; then
+			# ACL is up but there is no audio card: Connect is a no-op,
+			# so drop the link and let the next attempt redo profile setup.
+			log "no audio card on $mac, resetting link"
+			timeout "$CONNECT_TIMEOUT" bluetoothctl disconnect "$mac" >/dev/null 2>&1
+			sleep 1
+		fi
+
+		log "connecting $mac"
+		out=$(timeout "$CONNECT_TIMEOUT" bluetoothctl connect "$mac" 2>&1)
+
+		if is_connected "$mac" && link_stable "$mac" "$HOLD" && card_present "$mac"; then
+			log "connected $mac"
+			unset 'next_try[$mac]' 'backoff[$mac]'
+			apply_volume "$mac" && vol_done[$mac]=1
+			continue
+		fi
+
+		if [ "${backoff[$mac]:-0}" -eq 0 ]; then
+			delay=$MIN_RETRY
+		else
+			delay=$((${backoff[$mac]} * 2))
+			[ "$delay" -gt "$RETRY_MAX" ] && delay=$RETRY_MAX
+		fi
+		backoff[$mac]=$delay
+		next_try[$mac]=$(( $(date +%s) + delay ))
+		log "failed to connect $mac (${out//$'\n'/ }), retrying in ${delay}s"
+	done
+
+	sleep "$POLL_INTERVAL"
+done
